@@ -9,7 +9,7 @@ import time
 app = Flask(__name__)
 import os
 import csv
-origins = os.getenv("CORS_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173").split(",")
+origins = os.getenv("CORS_ORIGINS", "https://ask-db.vercel.app,http://localhost:5173,http://127.0.0.1:5173").split(",")
 CORS(app, resources={r"/*": {"origins": [o.strip() for o in origins]}})
 
 from flask_limiter import Limiter
@@ -106,11 +106,13 @@ def home():
 
 
 @app.route("/health", methods=["GET"])
+@limiter.exempt
 def health():
     return jsonify({"status": "ok"})
 
 
 @app.route("/about", methods=["GET"])
+@limiter.exempt
 def about():
     return jsonify({
         "app": "AskDB",
@@ -126,12 +128,14 @@ def about():
     })
 
 @app.route("/schema", methods=["GET"])
+@limiter.exempt
 def schema():
     return jsonify({
         "tables": load_schema_from_csv()
     })
 
 @app.route("/examples", methods=["GET"])
+@limiter.exempt
 def examples():
     return jsonify({
         "examples": get_examples()
@@ -140,7 +144,7 @@ def examples():
 
 
 @app.route("/api", methods=["POST"])
-@limiter.limit("6 per minute")
+@limiter.limit("6 per minute; 100 per day")
 def master1():
     try:
         data = request.get_json() or {}
