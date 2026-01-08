@@ -296,21 +296,4 @@ db = SQLDatabase.from_uri("sqlite:///path/to/database.db")
 db = SQLDatabase.from_uri("mssql+pyodbc://user:password@host:port/database?driver=ODBC+Driver+17+for+SQL+Server")
 ```
 
-## 🛡️ Security Considerations
 
-- Store API keys securely using environment variables
-- Implement proper authentication for production use
-- Validate and sanitize user inputs
-- Use parameterized queries to prevent SQL injection
-- Restrict database user permissions appropriately
-
-## 🔄 Future Enhancements
-
-- [ ] Add authentication and authorization
-- [ ] Query optimization suggestions
-- [ ] Dashboard for query analytics
-- [ ] Export functionality for results
-- [ ] Multi-language support
-- [ ] Support for NoSQL databases (MongoDB, etc.)
-- [ ] Query caching for improved performance
-- [ ] Batch query processing
