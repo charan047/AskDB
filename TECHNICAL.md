@@ -2,7 +2,7 @@
 
 This document covers the advanced AI techniques, LangChain integration, and implementation details of AskDB.
 
-## 🏗️ Architecture
+##  Architecture
 
 ```
 ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
