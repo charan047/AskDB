@@ -1,0 +1,9 @@
+table_name,description
+offices,"Office locations (city, country, territory) and office codes used by employees."
+employees,"Employee directory with reporting hierarchy (reportsTo), office assignment, and job titles."
+customers,"Customer accounts, contacts, location, sales rep employee number, and credit limit."
+productlines,"Product line categories (e.g., Motorcycles, Classic Cars)."
+products,"Product catalog with product line, stock quantity, buy price and MSRP."
+orders,Customer orders with dates and status.
+orderdetails,"Line items for each order (product, quantity, price each)."
+payments,Customer payments with dates and amounts.

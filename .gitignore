@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc
+*.db
+.chroma*/
+.chroma_examples/
+*.so
+.Python
+
+# Virtual env
+.venv/
+venv/
+ENV/
+env/
+
+# Env files / secrets
+.env
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
