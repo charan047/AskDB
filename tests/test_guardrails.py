@@ -1,6 +1,8 @@
 import os
 import pytest
 from sqlalchemy import text
+import os, sys
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from untitled0 import _sql_kind, _split_sql_statements, execute_with_guardrails
 from langchain_community.utilities.sql_database import SQLDatabase
