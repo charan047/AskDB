@@ -14,7 +14,6 @@ import io
 import csv
 import json
 import time
-import logging
 import hashlib
 from collections import OrderedDict
 from pathlib import Path
@@ -39,10 +38,6 @@ from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmb
 from langchain_chroma import Chroma
 from langchain_core.example_selectors import SemanticSimilarityExampleSelector
 from pydantic import BaseModel, Field, ValidationError
-from infra import get_redis, rget_json, rset_json
-
-logger = logging.getLogger('askdb.core')
-
 
 load_dotenv()
 
@@ -72,9 +67,6 @@ SLOW_QUERY_MS = int(os.getenv("SLOW_QUERY_MS", "4000"))
 # Lightweight response cache for public SELECT queries (connection-scoped)
 CACHE_TTL_SECONDS = int(os.getenv("CACHE_TTL_SECONDS", "600"))
 CACHE_MAX_ENTRIES = int(os.getenv("CACHE_MAX_ENTRIES", "512"))
-
-# Cache SELECT execution results (safe public mode) to reduce DB latency on repeat queries
-SQL_RESULT_CACHE_TTL_SECONDS = int(os.getenv("SQL_RESULT_CACHE_TTL_SECONDS", "120"))
 
 SCHEMA_RAG_ENABLED = os.getenv("SCHEMA_RAG_ENABLED", "0") == "1"
 SCHEMA_RAG_K = int(os.getenv("SCHEMA_RAG_K", "8"))
@@ -229,7 +221,7 @@ def _is_over_budget(explain: Optional[Dict[str, Any]]) -> bool:
 # ------------------------------------------------------------
 # Guardrails execution (supports sandbox rollback)
 # ------------------------------------------------------------
-def execute_with_guardrails(db_: SQLDatabase, sql: str, mode: str, cache_ns: Optional[str] = None) -> Dict[str, Any]:
+def execute_with_guardrails(db_: SQLDatabase, sql: str, mode: str) -> Dict[str, Any]:
     mode = (mode or "public").lower().strip()
     if mode not in ("public", "sandbox"):
         raise ValueError("Invalid mode. Use 'public' or 'sandbox'.")
@@ -345,50 +337,21 @@ def execute_with_guardrails(db_: SQLDatabase, sql: str, mode: str, cache_ns: Opt
         raise ValueError("Only SELECT is allowed here. Use sandbox mode for write simulation.")
 
     final_sql = _ensure_limit(_strip_sql(statements[0]), limit=100)
-
-    # Public SELECT execution cache (safe) — avoids repeated DB hits for identical SQL
-    if mode == "public" and SQL_RESULT_CACHE_TTL_SECONDS > 0 and cache_ns and get_redis():
-        sql_cache_key = f"sql:{cache_ns}:{hashlib.sha256(final_sql.encode('utf-8')).hexdigest()}"
-        cached = rget_json(sql_cache_key)
-        if isinstance(cached, dict) and isinstance(cached.get('rows'), list):
-            rows = cached.get('rows', [])
-            return {
-                "sql": final_sql,
-                "kind": "SELECT",
-                "mode": mode,
-                "rolled_back": False,
-                "rowcount": int(cached.get('rowcount', len(rows))),
-                "rows": rows,
-                "preview": f"Rows returned: {int(cached.get('rowcount', len(rows)))}. Preview: {rows[:5]}",
-                "db_ms": 0,
-                "db_cache_hit": True,
-            }
-
-    t_db0 = time.time()
     with engine.connect() as conn:
         _apply_timeout(conn, dialect, DB_TIMEOUT_MS)
         res = conn.execute(text(final_sql))
         cols = list(res.keys())
         fetched = res.fetchmany(100)
         rows = [dict(zip(cols, r)) for r in fetched]
-    db_ms = int((time.time() - t_db0) * 1000)
-
-    # Store select result cache (public only)
-    if mode == "public" and SQL_RESULT_CACHE_TTL_SECONDS > 0 and cache_ns and get_redis():
-        sql_cache_key = f"sql:{cache_ns}:{hashlib.sha256(final_sql.encode('utf-8')).hexdigest()}"
-        rset_json(sql_cache_key, {"rowcount": len(rows), "rows": rows}, ttl_s=SQL_RESULT_CACHE_TTL_SECONDS)
-
-    return {
-        "sql": final_sql,
-        "kind": "SELECT",
-        "mode": mode,
-        "rolled_back": False,
-        "rowcount": len(rows),
-        "rows": rows,
-        "preview": f"Rows returned: {len(rows)}. Preview: {rows[:5]}",
-        "db_ms": db_ms,
-        "db_cache_hit": False,
-    }
+        return {
+            "sql": final_sql,
+            "kind": "SELECT",
+            "mode": mode,
+            "rolled_back": False,
+            "rowcount": len(rows),
+            "rows": rows,
+            "preview": f"Rows returned: {len(rows)}. Preview: {rows[:5]}",
+        }
 
 # ------------------------------------------------------------
 # Schema CSV parsing + auto schema from DB
@@ -672,30 +635,99 @@ few_shot_prompt = build_few_shot_prompt()
 # ------------------------------------------------------------
 # Table selection model
 # ------------------------------------------------------------
-class TableSelection(BaseModel):
-    name: List[str] = Field(description="List of table names relevant to the question.")
 
-table_details_prompt = ChatPromptTemplate.from_messages(
+# -------------------------
+# Table selection (robust, no tool-calling)
+# NOTE: Using `with_structured_output()` can trigger tool-calling configs that
+# are incompatible with some google-genai / proto versions ("unknown enum label 'any'").
+# We keep table selection purely text/JSON-based to avoid that entire class of failures.
+# -------------------------
+import json
+
+def _extract_table_names_from_details(table_details: str) -> List[str]:
+    names: List[str] = []
+    for m in re.finditer(r"Table Name:\s*([A-Za-z0-9_]+)", table_details or ""):
+        names.append(m.group(1).strip())
+    # de-dupe while preserving order
+    seen = set()
+    out: List[str] = []
+    for n in names:
+        if n not in seen:
+            out.append(n)
+            seen.add(n)
+    return out
+
+_TABLE_SELECT_PROMPT = ChatPromptTemplate.from_messages(
     [
-        ("system",
-         "Return the names of ALL SQL tables that might be relevant.\n\n"
-         "Tables:\n{table_details}\n\n"
-         "Return only the table names."),
-        ("human", "{question}")
+        (
+            "system",
+            "You select relevant SQL tables for a question.\n"
+            "Return ONLY valid JSON in the exact format: {{\"tables\": [\"table1\", \"table2\"]}}\n"
+            "Include ALL potentially relevant tables; do not add tables not in the list.\n\n"
+            "Available tables:\n{table_details}\n",
+        ),
+        ("human", "{question}"),
     ]
 )
 
-structured_llm = llm.with_structured_output(TableSelection)
-table_chain = table_details_prompt | structured_llm
+def _parse_table_list(raw: str, allowed: List[str]) -> List[str]:
+    raw = (raw or "").strip()
+    # Try direct JSON first
+    candidates: List[str] = []
+    try:
+        obj = json.loads(raw)
+        candidates = obj.get("tables") or obj.get("table_names") or obj.get("name") or []
+    except Exception:
+        # Try to extract a JSON object substring
+        try:
+            m = re.search(r"\{.*\}", raw, flags=re.DOTALL)
+            if m:
+                obj = json.loads(m.group(0))
+                candidates = obj.get("tables") or obj.get("table_names") or obj.get("name") or []
+        except Exception:
+            candidates = []
 
-def get_tables(table_response: TableSelection) -> List[str]:
-    return table_response.name
+    # Normalize + filter to allowed
+    allowed_set = set(allowed)
+    picked: List[str] = []
+    for t in candidates if isinstance(candidates, list) else []:
+        if not isinstance(t, str):
+            continue
+        t2 = t.strip()
+        if t2 in allowed_set and t2 not in picked:
+            picked.append(t2)
 
-select_table = {"question": itemgetter("question"), "table_details": itemgetter("table_details")} | table_chain | get_tables
+    return picked
 
-# ------------------------------------------------------------
-# SQL generation prompt (dialect-aware)
-# ------------------------------------------------------------
+def select_tables_for_question(question: str, table_details: str) -> List[str]:
+    allowed = _extract_table_names_from_details(table_details)
+    if not allowed:
+        return []
+
+    # LLM selection (best-effort)
+    try:
+        raw = (_TABLE_SELECT_PROMPT | llm | StrOutputParser()).invoke(
+            {"question": question, "table_details": table_details}
+        )
+        picked = _parse_table_list(raw, allowed)
+        if picked:
+            return picked
+    except Exception:
+        pass
+
+    # Heuristic fallback: keyword match
+    q = (question or "").lower()
+    picked = [t for t in allowed if t.lower() in q]
+    if picked:
+        return picked[:12]
+
+    # Last resort: return a small subset to avoid huge prompts
+    return allowed[:12]
+
+# Runnable used by the SQL chain
+select_table = RunnableLambda(lambda x: select_tables_for_question(x.get("question", ""), x.get("table_details", "")))
+
+
 def make_final_prompt(dialect: str) -> ChatPromptTemplate:
     dialect_disp = dialect or "SQL"
     return ChatPromptTemplate.from_messages(
@@ -963,24 +995,7 @@ def _cache_key(db_url: str, schema_source: str, dialect: str, mode: str, questio
     sig = f"{db_url}::{schema_source}::{dialect}::{mode}::{q}"
     return hashlib.sha256(sig.encode("utf-8")).hexdigest()
 
-
-# Redis-backed cache (optional). Falls back to in-memory LRU.
-def _redis_cache_get(key: str) -> Optional[Dict[str, Any]]:
-    if not get_redis():
-        return None
-    return rget_json(f"resp_cache:{key}")
-
-def _redis_cache_set(key: str, value: Dict[str, Any]) -> None:
-    if not get_redis() or CACHE_TTL_SECONDS <= 0:
-        return
-    rset_json(f"resp_cache:{key}", value, ttl_s=CACHE_TTL_SECONDS)
-
 def _cache_get(key: str) -> Optional[Dict[str, Any]]:
-    # Redis-first (shared across workers)
-    ritem = _redis_cache_get(key)
-    if isinstance(ritem, dict) and ritem.get('value') is not None:
-        return ritem.get('value')
-
     now = time.time()
     item = _response_cache.get(key)
     if not item:
@@ -993,9 +1008,6 @@ def _cache_get(key: str) -> Optional[Dict[str, Any]]:
     return item.get("value")
 
 def _cache_set(key: str, value: Dict[str, Any]) -> None:
-    # Redis (best-effort)
-    _redis_cache_set(key, {"value": value})
-
     if CACHE_TTL_SECONDS <= 0 or CACHE_MAX_ENTRIES <= 0:
         return
     now = time.time()
@@ -1009,7 +1021,7 @@ def _cache_set(key: str, value: Dict[str, Any]) -> None:
 _schema_ctx_cache: Dict[str, Any] = {}
 SCHEMA_CTX_TTL_SECONDS = int(os.getenv("SCHEMA_CTX_TTL_SECONDS", "600"))
 
-def build_chain_for_db(db_: SQLDatabase, dialect: str, cache_ns: str) -> Any:
+def build_chain_for_db(db_: SQLDatabase, dialect: str) -> Any:
     final_prompt = make_final_prompt(dialect)
     generate_query = create_sql_query_chain(llm, db_, final_prompt)
 
@@ -1023,7 +1035,7 @@ def build_chain_for_db(db_: SQLDatabase, dialect: str, cache_ns: str) -> Any:
 
         def _exec_once(sql_to_run: str) -> Dict[str, Any]:
             t0 = time.time()
-            out = execute_with_guardrails(db_, sql_to_run, mode, cache_ns=cache_ns)
+            out = execute_with_guardrails(db_, sql_to_run, mode)
             out["db_ms"] = int((time.time() - t0) * 1000)
             return out
 
@@ -1141,10 +1153,6 @@ def get_or_build_chain(db_url: str, schema_csv_text: Optional[str]) -> Dict[str,
       chain, db, table_details, tables, schema_source, dialect, host, warnings
     Uses a short-lived schema context cache to avoid re-introspecting on every request.
     """
-    # NOTE: `schema_csv_text` is the only schema override input.
-    # Previous iterations referenced `schema_csv_override` here, ...
-    # caused a NameError when no CSV was provided.
-
     cache_sig = f"{db_url}::{_hash_text(schema_csv_text or '')}"
     now = time.time()
     cached = _schema_ctx_cache.get(cache_sig)
@@ -1168,8 +1176,7 @@ def get_or_build_chain(db_url: str, schema_csv_text: Optional[str]) -> Dict[str,
     cache_key = f"{db_url}::{_hash_text(table_details)}::{dialect}::{int(SCHEMA_RAG_ENABLED)}"
 
     if cache_key not in _chain_cache:
-        cache_ns = hashlib.sha256(db_url.encode('utf-8')).hexdigest()[:12]
-        _chain_cache[cache_key] = build_chain_for_db(db_, dialect, cache_ns)
+        _chain_cache[cache_key] = build_chain_for_db(db_, dialect)
 
     return {
         "chain": _chain_cache[cache_key],
@@ -1196,21 +1203,26 @@ _demo_table_details = _demo_ctx["table_details"]
 # ------------------------------------------------------------
 # Public API used by code1.py
 # ------------------------------------------------------------
-def get_schema_tables(db_url_override: Optional[str], schema_csv_override: Optional[str]) -> Dict[str, Any]:
+def get_schema_tables(
+    db_url_override: Optional[str] = None,
+    schema_csv_override: Optional[str] = None,
+    schema_csv_text: Optional[str] = None,
+) -> Dict[str, Any]:
     """
     Returns tables + schema_source + dialect + host for either demo or BYODB.
     """
-    schema_csv = schema_csv_text if schema_csv_text is not None else schema_csv_override
+    # Backward/forward compatible aliases
+    if schema_csv_text and not schema_csv_override:
+        schema_csv_override = schema_csv_text
+
     if db_url_override:
-        # Use the resolved schema override (if any). This keeps BYODB working
-        # when the caller supplies schema text or when it is omitted (auto-introspection).
-        ctx = get_or_build_chain(db_url_override, schema_csv_text)
+        ctx = get_or_build_chain(db_url_override, schema_csv_override)
         return {
             "tables": ctx["tables"],
             "schema_source": ctx["schema_source"],
             "dialect": ctx["dialect"],
             "host": ctx["host"],
-            "warnings": ctx.get("warnings",[]),
+            "warnings": ctx["warnings"],
         }
     # demo
     return {
@@ -1221,30 +1233,11 @@ def get_schema_tables(db_url_override: Optional[str], schema_csv_override: Optio
         "warnings": [],
     }
 
-def chain_code(
-    q: str,
-    m: Optional[List[Dict[str, str]]] = None,
-    *,
-    messages: Optional[List[Dict[str, str]]] = None,
-    mode: str = "public",
-    db_url_override: Optional[str] = None,
-    schema_csv_text: Optional[str] = None,
-    schema_csv_override: Optional[str] = None,
-) -> Dict[str, Any]:
+def chain_code(q: str, m: List[Dict[str, str]], mode: str = "public", db_url_override: Optional[str] = None, schema_csv_override: Optional[str] = None) -> Dict[str, Any]:
     """
     Main entrypoint. 'm' kept for compatibility (frontend history), not injected into SQL prompt.
     Returns dict including answer/sql/preview + insights summary/chart_spec.
     """
-    # Accept either positional 'm' or keyword 'messages'
-    if messages is not None and m is None:
-        m = messages
-    if m is None:
-        m = []
-
-    # Prefer schema_csv_text if provided
-    if schema_csv_text is None:
-        schema_csv_text = schema_csv_override
-
     top_k = TOP_K_DEFAULT
     mode = (mode or "public").lower().strip()
 
@@ -1256,8 +1249,7 @@ def chain_code(
 
     # Determine context (demo vs BYODB) for cache key
     if db_url_override:
-        # Use resolved schema override (if any). If omitted, schema will be auto-introspected.
-        ctx = get_or_build_chain(db_url_override, schema_csv_text)
+        ctx = get_or_build_chain(db_url_override, schema_csv_override)
         cache_db_url = db_url_override
         cache_schema_source = ctx.get("schema_source", "auto")
         cache_dialect = ctx.get("dialect", "unknown")
