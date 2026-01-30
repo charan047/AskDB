@@ -66,14 +66,15 @@ Switch back to **mode = public**
 
 ```mermaid
 flowchart LR
-  U[User] -->|question| FE[React + Vite UI]
-  FE -->|HTTP| API[Flask API]
-  API -->|schema context| SCHEMA[Schema source<br/>CSV or DB introspection]
-  API -->|prompt| LLM[Gemini via LangChain]
-  API -->|SQL (guarded)| DB[(SQL DB)]
-  API -->|cache/jobs| R[(Redis - optional)]
-  API -->|metrics| M[/Prometheus metrics/]
+  U[User] --> FE[Frontend - React Vite]
+  FE --> API[Flask API]
+  API --> SCHEMA[Schema - CSV or introspection]
+  API --> LLM[Gemini - LangChain]
+  API --> DB[(SQL database)]
+  API --> R[(Redis - optional)]
+  API --> M[Metrics - Prometheus]
   API --> FE
+
 ```
 
 **Execution path**
