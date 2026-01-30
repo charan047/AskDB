@@ -1,5 +1,19 @@
-@import "tailwindcss";
 :root {
   font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Display",
     "SF Pro Text", "Helvetica Neue", Arial, "Noto Sans", "Apple Color Emoji", "Segoe UI Emoji";
+}
+
+@import "tailwindcss";
+
+/* Apple-ish rendering + clean light canvas */
+html, body {
+  height: 100%;
+  background: #F5F5F7;
+  color: #0f172a; /* slate-900 */
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+* {
+  box-sizing: border-box;
 }

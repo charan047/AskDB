@@ -297,3 +297,15 @@ db = SQLDatabase.from_uri("mssql+pyodbc://user:password@host:port/database?drive
 ```
 
 
+
+
+## Async execution (RQ + Redis)
+
+AskDB supports background execution for long queries.
+- POST /api with `{ "async": true }` returns `202 { job_id }`.
+- Poll `GET /job/<job_id>` until status is `finished`.
+
+## Observability (Prometheus metrics)
+
+- `GET /metrics` exposes Prometheus-format metrics.
+- Tracks request latency, DB vs LLM time, cache hits, and job counts.
