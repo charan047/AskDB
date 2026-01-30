@@ -520,16 +520,7 @@ def build_schema_context(db_url: str, schema_csv_text: Optional[str]) -> Dict[st
     - warnings: list[str]
     """
     warnings: List[str] = []
-    db_ = SQLDatabase.from_uri(
-    db_url,
-    engine_args={
-        "pool_pre_ping": True,      # ✅ detects dead connections, reconnects
-        "pool_recycle": 180,        # ✅ refresh connections every 3 min (Supabase-friendly)
-        "pool_size": 5,
-        "max_overflow": 5,
-        "pool_timeout": 30,
-    },
-)
+    db_ = SQLDatabase.from_uri(db_url)
 
     # test connect quickly
     try:
@@ -679,46 +670,28 @@ def build_few_shot_prompt() -> FewShotChatMessagePromptTemplate:
 few_shot_prompt = build_few_shot_prompt()
 
 # ------------------------------------------------------------
-# Table selection (NO tool calling) — fixes Gemini enum error ("unknown enum label any")
+# Table selection model
 # ------------------------------------------------------------
-# We avoid llm.with_structured_output(...) because some Gemini/proto versions
-# mis-handle tool config enums. Instead, we force strict JSON text output and parse it.
-
-def _parse_table_json(s: str) -> List[str]:
-    """Parse JSON: {{"name": ["table1", "table2", ...]}} -> List[str]."""
-    try:
-        obj = json.loads((s or "").strip())
-        names = obj.get("name", [])
-        if not isinstance(names, list):
-            return []
-        out: List[str] = []
-        for x in names:
-            t = str(x).strip()
-            if t:
-                out.append(t)
-        return out
-    except Exception:
-        return []
+class TableSelection(BaseModel):
+    name: List[str] = Field(description="List of table names relevant to the question.")
 
 table_details_prompt = ChatPromptTemplate.from_messages(
     [
-        (
-            "system",
-            "Return JSON ONLY in this exact format: {{\"name\": [\"table1\", \"table2\"]}}\n"
-            "No explanations. No markdown.\n\n"
-            "Task: choose ALL tables that might be relevant to answer the user question.\n\n"
-            "Tables:\n{table_details}\n",
-        ),
-        ("human", "{question}"),
+        ("system",
+         "Return the names of ALL SQL tables that might be relevant.\n\n"
+         "Tables:\n{table_details}\n\n"
+         "Return only the table names."),
+        ("human", "{question}")
     ]
 )
 
-# Produces List[str]
-table_chain = table_details_prompt | llm | StrOutputParser() | RunnableLambda(_parse_table_json)
+structured_llm = llm.with_structured_output(TableSelection)
+table_chain = table_details_prompt | structured_llm
 
-# select_table produces List[str] and is consumed by create_sql_query_chain via `table_names_to_use`
-select_table = {"question": itemgetter("question"), "table_details": itemgetter("table_details")} | table_chain
+def get_tables(table_response: TableSelection) -> List[str]:
+    return table_response.name
 
+select_table = {"question": itemgetter("question"), "table_details": itemgetter("table_details")} | table_chain | get_tables
 
 # ------------------------------------------------------------
 # SQL generation prompt (dialect-aware)
@@ -1168,8 +1141,9 @@ def get_or_build_chain(db_url: str, schema_csv_text: Optional[str]) -> Dict[str,
       chain, db, table_details, tables, schema_source, dialect, host, warnings
     Uses a short-lived schema context cache to avoid re-introspecting on every request.
     """
-    if schema_csv_text is None:
-        schema_csv_text = schema_csv_override
+    # NOTE: `schema_csv_text` is the only schema override input.
+    # Previous iterations referenced `schema_csv_override` here, ...
+    # caused a NameError when no CSV was provided.
 
     cache_sig = f"{db_url}::{_hash_text(schema_csv_text or '')}"
     now = time.time()
@@ -1222,25 +1196,14 @@ _demo_table_details = _demo_ctx["table_details"]
 # ------------------------------------------------------------
 # Public API used by code1.py
 # ------------------------------------------------------------
-from typing import Optional, Dict, Any
-
-def get_schema_tables(
-    db_url_override: Optional[str] = None,
-    schema_csv_override: Optional[str] = None,
-    schema_csv_text: Optional[str] = None,
-) -> Dict[str, Any]:
+def get_schema_tables(db_url_override: Optional[str], schema_csv_override: Optional[str]) -> Dict[str, Any]:
     """
     Returns tables + schema_source + dialect + host for either demo or BYODB.
-
-    Backward-compatible:
-    - Some callers send schema_csv_override
-    - Newer callers send schema_csv_text
     """
-    # Prefer schema_csv_text if provided, else fallback to schema_csv_override
-    schema_csv = schema_csv_text if schema_csv_text is not None else schema_csv_override
-
     if db_url_override:
-        ctx = get_or_build_chain(db_url_override, schema_csv)
+        # Use the resolved schema override (if any). This keeps BYODB working
+        # when the caller supplies schema text or when it is omitted (auto-introspection).
+        ctx = get_or_build_chain(db_url_override, schema_csv_text)
         return {
             "tables": ctx["tables"],
             "schema_source": ctx["schema_source"],
@@ -1248,7 +1211,6 @@ def get_schema_tables(
             "host": ctx["host"],
             "warnings": ctx["warnings"],
         }
-
     # demo
     return {
         "tables": _demo_ctx["tables"],
@@ -1257,7 +1219,6 @@ def get_schema_tables(
         "host": _demo_ctx["host"],
         "warnings": [],
     }
-
 
 def chain_code(
     q: str,
@@ -1294,7 +1255,8 @@ def chain_code(
 
     # Determine context (demo vs BYODB) for cache key
     if db_url_override:
-        ctx = get_or_build_chain(db_url_override, schema_csv_override)
+        # Use resolved schema override (if any). If omitted, schema will be auto-introspected.
+        ctx = get_or_build_chain(db_url_override, schema_csv_text)
         cache_db_url = db_url_override
         cache_schema_source = ctx.get("schema_source", "auto")
         cache_dialect = ctx.get("dialect", "unknown")
