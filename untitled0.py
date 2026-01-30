@@ -1200,6 +1200,7 @@ def get_schema_tables(db_url_override: Optional[str], schema_csv_override: Optio
     """
     Returns tables + schema_source + dialect + host for either demo or BYODB.
     """
+    schema_csv = schema_csv_text if schema_csv_text is not None else schema_csv_override
     if db_url_override:
         # Use the resolved schema override (if any). This keeps BYODB working
         # when the caller supplies schema text or when it is omitted (auto-introspection).
@@ -1209,7 +1210,7 @@ def get_schema_tables(db_url_override: Optional[str], schema_csv_override: Optio
             "schema_source": ctx["schema_source"],
             "dialect": ctx["dialect"],
             "host": ctx["host"],
-            "warnings": ctx["warnings"],
+            "warnings": ctx.get("warnings",[]),
         }
     # demo
     return {
