@@ -53,12 +53,12 @@ Most NL→SQL demos stop at “the model generated a query.” AskDB is built li
 ### 3) Sandbox “what-if” (rolled back)
 Switch **mode = sandbox**  
 `Delete customer 112`  
-✅ Expect: `rolled_back: true`
+ Expect: `rolled_back: true`
 
 ### 4) Proof (customer still exists)
 Switch back to **mode = public**  
 `Show customer 112`  
-✅ Customer is still present → rollback verified
+ Customer is still present → rollback verified
 
 ---
 
