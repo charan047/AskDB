@@ -22,6 +22,7 @@ jobs:
           # Use sqlite for tests
           DATABASE_URL: sqlite:///./tests/tmp.db
           GOOGLE_API_KEY: dummy
+          PYTHONPATH: .
         run: |
           pytest -q
 
