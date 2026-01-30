@@ -1233,11 +1233,13 @@ def get_schema_tables(
         "warnings": [],
     }
 
-def chain_code(q: str, m: List[Dict[str, str]], mode: str = "public", db_url_override: Optional[str] = None, schema_csv_override: Optional[str] = None) -> Dict[str, Any]:
+def chain_code(q: str, m: List[Dict[str, str]], mode: str = "public", db_url_override: Optional[str] = None, schema_csv_text: Optional[str] = None, schema_csv_override: Optional[str] = None) -> Dict[str, Any]:
     """
     Main entrypoint. 'm' kept for compatibility (frontend history), not injected into SQL prompt.
     Returns dict including answer/sql/preview + insights summary/chart_spec.
     """
+    # Backward/forward compatible: accept schema_csv_text or schema_csv_override
+    schema_csv_override = schema_csv_text or schema_csv_override
     top_k = TOP_K_DEFAULT
     mode = (mode or "public").lower().strip()
 
