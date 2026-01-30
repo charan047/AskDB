@@ -478,10 +478,10 @@ def connect():
         if not BYODB_ENABLED:
             return jsonify({"error": "BYODB disabled"}), 403
 
-        if DEMO_KEY:
-            blocked = _require_demo_key()
-            if blocked:
-                return blocked
+        # if DEMO_KEY:
+        #     blocked = _require_demo_key()
+        #     if blocked:
+        #         return blocked
 
         data = request.get_json() or {}
         session_id = (data.get("session_id") or "").strip()
@@ -617,10 +617,10 @@ def api():
         dialect = "demo"
         host = ""
         if conn:
-            if DEMO_KEY:
-                blocked = _require_demo_key()
-                if blocked:
-                    return blocked
+            # if DEMO_KEY:
+            #     blocked = _require_demo_key()
+            #     if blocked:
+            #         return blocked
             db_url_override = conn.db_url
             schema_csv_override = conn.schema_csv
             schema_source = conn.schema_source
