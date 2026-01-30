@@ -1,5 +1,7 @@
 import os
 import pytest
+import sys, os
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 os.environ["DATABASE_URL"] = "sqlite:///./tests/tmp.db"
 
