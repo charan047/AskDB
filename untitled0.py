@@ -1222,12 +1222,25 @@ _demo_table_details = _demo_ctx["table_details"]
 # ------------------------------------------------------------
 # Public API used by code1.py
 # ------------------------------------------------------------
-def get_schema_tables(db_url_override: Optional[str], schema_csv_override: Optional[str]) -> Dict[str, Any]:
+from typing import Optional, Dict, Any
+
+def get_schema_tables(
+    db_url_override: Optional[str] = None,
+    schema_csv_override: Optional[str] = None,
+    schema_csv_text: Optional[str] = None,
+) -> Dict[str, Any]:
     """
     Returns tables + schema_source + dialect + host for either demo or BYODB.
+
+    Backward-compatible:
+    - Some callers send schema_csv_override
+    - Newer callers send schema_csv_text
     """
+    # Prefer schema_csv_text if provided, else fallback to schema_csv_override
+    schema_csv = schema_csv_text if schema_csv_text is not None else schema_csv_override
+
     if db_url_override:
-        ctx = get_or_build_chain(db_url_override, schema_csv_override)
+        ctx = get_or_build_chain(db_url_override, schema_csv)
         return {
             "tables": ctx["tables"],
             "schema_source": ctx["schema_source"],
@@ -1235,6 +1248,7 @@ def get_schema_tables(db_url_override: Optional[str], schema_csv_override: Optio
             "host": ctx["host"],
             "warnings": ctx["warnings"],
         }
+
     # demo
     return {
         "tables": _demo_ctx["tables"],
@@ -1243,6 +1257,7 @@ def get_schema_tables(db_url_override: Optional[str], schema_csv_override: Optio
         "host": _demo_ctx["host"],
         "warnings": [],
     }
+
 
 def chain_code(
     q: str,
