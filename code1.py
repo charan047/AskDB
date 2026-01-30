@@ -499,7 +499,9 @@ def connect():
         if schema_csv and len(schema_csv) > MAX_SCHEMA_CHARS:
             return jsonify({"error": "schema_csv too large"}), 400
 
-        tables, meta = get_schema_tables(db_url, schema_csv_text=schema_csv or None)
+        meta = get_schema_tables(db_url_override=db_url, schema_csv_override=schema_csv or None)
+        tables = meta.get("tables", [])
+
 
         expires_at = _now() + CONN_TTL_SECONDS
         c = SessionConn(
