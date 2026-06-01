@@ -65,6 +65,7 @@ limiter = Limiter(
 BYODB_ENABLED = os.getenv("BYODB_ENABLED", "1") == "1"
 SANDBOX_ENABLED = os.getenv("SANDBOX_ENABLED", "1") == "1"
 DEMO_KEY = os.getenv("DEMO_KEY", "").strip()  # if set, gates BYODB + sandbox
+API_KEY = os.getenv("API_KEY", "").strip()  # if set, requires X-API-Key or Authorization: ******
 
 # Async job system (RQ + Redis)
 ASYNC_ENABLED = os.getenv("ASYNC_ENABLED", "1") == "1"
@@ -137,6 +138,9 @@ def _safe_error(msg: str) -> str:
 def _before_request():
     g.request_id = (request.headers.get("X-Request-ID") or str(uuid4())).strip()
     g.start_time = time.time()
+    blocked = _require_api_key()
+    if blocked:
+        return blocked
 
 
 @app.after_request
@@ -175,8 +179,25 @@ def _after_request(resp):
 
 
 # ------------------------------------------------------------
-# Demo key gating
+# Auth / demo key gating
 # ------------------------------------------------------------
+def _require_api_key() -> Optional[Any]:
+    if not API_KEY:
+        return None
+    if request.method == "OPTIONS":
+        return None
+    if request.path == "/health":
+        return None
+    incoming = (request.headers.get("X-API-Key") or "").strip()
+    if not incoming:
+        auth = (request.headers.get("Authorization") or "").strip()
+        if auth.lower().startswith("bearer "):
+            incoming = auth.split(" ", 1)[1].strip()
+    if incoming != API_KEY:
+        return jsonify({"error": "API_KEY required"}), 401
+    return None
+
+
 def _require_demo_key() -> Optional[Any]:
     if not DEMO_KEY:
         return None
@@ -390,6 +411,7 @@ def home():
                 "byodb": BYODB_ENABLED,
                 "sandbox": SANDBOX_ENABLED,
                 "demo_key_gated": bool(DEMO_KEY),
+                "api_key_required": bool(API_KEY),
                 "redis_enabled": bool(get_redis()),
                 "async_enabled": ASYNC_ENABLED and bool(get_redis()),
             },
@@ -443,6 +465,11 @@ def connection_status():
     if not c:
         return jsonify({"connected": False, "host": "", "dialect": "", "schema_source": ""})
 
+    if DEMO_KEY:
+        blocked = _require_demo_key()
+        if blocked:
+            return blocked
+
     return jsonify({"connected": True, "host": c.host, "dialect": c.dialect, "schema_source": c.schema_source})
 
 
@@ -451,6 +478,10 @@ def connection_status():
 def schema():
     session_id = (request.args.get("session_id") or "").strip()
     c = _get_connection(session_id) if session_id else None
+    if c and DEMO_KEY:
+        blocked = _require_demo_key()
+        if blocked:
+            return blocked
     tables = c.tables if c else _load_demo_schema_from_csv()
     return jsonify({"tables": tables})
 
@@ -478,10 +509,10 @@ def connect():
         if not BYODB_ENABLED:
             return jsonify({"error": "BYODB disabled"}), 403
 
-        # if DEMO_KEY:
-        #     blocked = _require_demo_key()
-        #     if blocked:
-        #         return blocked
+        if DEMO_KEY:
+            blocked = _require_demo_key()
+            if blocked:
+                return blocked
 
         data = request.get_json() or {}
         session_id = (data.get("session_id") or "").strip()
@@ -532,6 +563,11 @@ def disconnect():
         reset_session = bool(data.get("reset_session", True))
         if not session_id:
             return jsonify({"error": "Missing session_id"}), 400
+
+        if DEMO_KEY:
+            blocked = _require_demo_key()
+            if blocked:
+                return blocked
 
         _del_connection(session_id)
         if reset_session:
@@ -619,10 +655,10 @@ def api():
         dialect = "demo"
         host = ""
         if conn:
-            # if DEMO_KEY:
-            #     blocked = _require_demo_key()
-            #     if blocked:
-            #         return blocked
+            if DEMO_KEY:
+                blocked = _require_demo_key()
+                if blocked:
+                    return blocked
             db_url_override = conn.db_url
             schema_csv_override = conn.schema_csv
             schema_source = conn.schema_source

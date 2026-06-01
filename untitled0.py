@@ -133,6 +133,48 @@ SCHEMA_RAG_K = int(os.getenv("SCHEMA_RAG_K", "8"))
 SCHEMA_RAG_PERSIST = os.getenv("SCHEMA_RAG_PERSIST", "0") == "1"
 
 # ------------------------------------------------------------
+# Table allow/deny lists
+# ------------------------------------------------------------
+def _normalize_table_name(name: str) -> str:
+    return re.sub(r"[`\"\[\]]", "", (name or "")).strip().lower()
+
+
+def _parse_table_list_env(var_name: str) -> List[str]:
+    raw = os.getenv(var_name, "")
+    parts = [p.strip() for p in raw.split(",") if p.strip()]
+    return [_normalize_table_name(p) for p in parts]
+
+
+def _table_policy() -> Tuple[set, set]:
+    allow = set(_parse_table_list_env("TABLE_ALLOWLIST"))
+    deny = set(_parse_table_list_env("TABLE_DENYLIST"))
+    return allow, deny
+
+
+def _filter_tables(tables: List[Dict[str, str]], allow: set, deny: set) -> List[Dict[str, str]]:
+    filtered: List[Dict[str, str]] = []
+    for t in tables:
+        name = _normalize_table_name(t.get("table_name", ""))
+        if not name:
+            continue
+        if allow and name not in allow:
+            continue
+        if deny and name in deny:
+            continue
+        filtered.append(t)
+    return filtered
+
+
+def _table_details_from_tables(tables: List[Dict[str, str]]) -> str:
+    if not tables:
+        return ""
+    blocks = [
+        f"Table Name:{t.get('table_name')}\nTable Description:{t.get('description', '')}\n"
+        for t in tables
+    ]
+    return "\n".join(blocks).strip() + "\n"
+
+# ------------------------------------------------------------
 # SQL cleanup + splitting
 # ------------------------------------------------------------
 def clean_sql_query(text_: str) -> str:
@@ -183,6 +225,48 @@ def _split_sql_statements(sql: str) -> List[str]:
     if tail:
         stmts.append(tail)
     return stmts
+
+
+def _extract_cte_names(sql: str) -> List[str]:
+    cleaned = re.sub(r"\s+", " ", (sql or "")).strip()
+    if not cleaned.lower().startswith("with "):
+        return []
+    return [m.group(1).strip().lower() for m in re.finditer(r"(?:with|,)\s*([a-zA-Z0-9_]+)\s+as\s*\(", cleaned, flags=re.IGNORECASE)]
+
+
+_TABLE_REF_RE = re.compile(r"\b(from|join|update|into|delete\s+from)\s+([`\"\[]?[a-zA-Z0-9_\.]+[`\"\]]?)", flags=re.IGNORECASE)
+
+
+def _extract_table_names(sql: str) -> List[str]:
+    if not sql:
+        return []
+    cleaned = re.sub(r"/\*.*?\*/", " ", sql, flags=re.DOTALL)
+    cleaned = re.sub(r"--[^\n]*", " ", cleaned)
+    ctes = set(_extract_cte_names(cleaned))
+    seen = set()
+    out: List[str] = []
+    for m in _TABLE_REF_RE.finditer(cleaned):
+        raw = m.group(2) or ""
+        name = _normalize_table_name(raw.split(".")[-1])
+        if not name or name in ctes or name in seen:
+            continue
+        seen.add(name)
+        out.append(name)
+    return out
+
+
+def _enforce_table_policy(sql: str, allow: set, deny: set) -> None:
+    if not allow and not deny:
+        return
+    tables = _extract_table_names(sql)
+    if deny:
+        blocked = [t for t in tables if t in deny]
+        if blocked:
+            raise ValueError(f"Query references denied tables: {', '.join(sorted(set(blocked)))}")
+    if allow:
+        missing = [t for t in tables if t not in allow]
+        if missing:
+            raise ValueError(f"Query references tables outside allowlist: {', '.join(sorted(set(missing)))}")
 
 def _sql_kind(sql: str) -> str:
     """SELECT, DML, DDL, OTHER"""
@@ -295,6 +379,11 @@ def execute_with_guardrails(db_: SQLDatabase, sql: str, mode: str) -> Dict[str, 
         raise ValueError("Multi-statement SQL is not allowed in public mode.")
 
     kinds = [_sql_kind(s) for s in statements]
+
+    allow, deny = _table_policy()
+    if allow or deny:
+        for stmt in statements:
+            _enforce_table_policy(stmt, allow, deny)
 
     # Block DDL always
     if any(k == "DDL" for k in kinds):
