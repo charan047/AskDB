@@ -55,8 +55,21 @@ python -c "import langchain; import flask; print('Installation successful!')"
 Create a `.env` file in the project root:
 
 ```bash
+# LLM Provider
+LLM_PROVIDER=gemini  # gemini | openrouter
+
 # Google AI Configuration
 GOOGLE_API_KEY=your_google_api_key_here
+GEMINI_MODEL=gemini-2.5-flash
+
+# OpenRouter Configuration (optional)
+OPENROUTER_API_KEY=your_openrouter_api_key_here
+OPENROUTER_MODEL=openai/gpt-4o-mini
+OPENROUTER_EMBEDDINGS_MODEL=text-embedding-3-small
+OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
+OPENROUTER_SITE_URL=
+OPENROUTER_APP_NAME=AskDB
+EMBEDDINGS_PROVIDER=gemini  # gemini | openrouter
 
 # LangChain Configuration
 LANGCHAIN_TRACING_V2=true

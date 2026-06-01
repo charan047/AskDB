@@ -59,8 +59,9 @@ AskDB is built on LangChain, leveraging its powerful framework for building AI a
 
 #### **LLM Integration**
 ```python
-# Google Gemini integration via LangChain
-llm = ChatGoogleGenerativeAI(model="gemini-1.5-pro", temperature=0)
+# Provider-configurable LLM via LangChain (Gemini/OpenRouter)
+LLM_PROVIDER=gemini  # or openrouter
+llm = get_llm()
 ```
 
 #### **Prompt Management**
@@ -181,11 +182,9 @@ Final Answer
 
 ### Vector Embeddings
 ```python
-# Uses Google's embedding model for semantic similarity
-embeddings = GoogleGenerativeAIEmbeddings(
-    model="models/embedding-001", 
-    task_type="retrieval_query"
-)
+# Provider-configurable embeddings for semantic similarity
+EMBEDDINGS_PROVIDER=gemini  # or openrouter
+embeddings = get_embeddings()
 ```
 
 ### Structured Output
