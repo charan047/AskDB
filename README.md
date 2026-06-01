@@ -69,7 +69,7 @@ flowchart LR
   U[User] --> FE[Frontend - React Vite]
   FE --> API[Flask API]
   API --> SCHEMA[Schema - CSV or introspection]
-  API --> LLM[Gemini - LangChain]
+  API --> LLM[Gemini/OpenRouter - LangChain]
   API --> DB[(SQL database)]
   API --> R[(Redis - optional)]
   API --> M[Metrics - Prometheus]
@@ -159,7 +159,7 @@ Base URL (local): `http://127.0.0.1:5000`
 - Deployed on Vercel
 
 **Backend**
-- Flask + SQLAlchemy + LangChain + Gemini
+- Flask + SQLAlchemy + LangChain + Gemini/OpenRouter
 - Rate limiting + structured logging
 - Optional: Redis + RQ + Prometheus
 
@@ -190,8 +190,18 @@ Create `.env` in the repo root (do **not** commit it):
 
 ```env
 # --- LLM ---
+LLM_PROVIDER=gemini  # gemini | openrouter
 GOOGLE_API_KEY=YOUR_GOOGLE_API_KEY
 GEMINI_MODEL=gemini-2.5-flash
+
+# --- OpenRouter (optional) ---
+OPENROUTER_API_KEY=YOUR_OPENROUTER_API_KEY
+OPENROUTER_MODEL=openai/gpt-4o-mini
+OPENROUTER_EMBEDDINGS_MODEL=text-embedding-3-small
+OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
+OPENROUTER_SITE_URL=
+OPENROUTER_APP_NAME=AskDB
+EMBEDDINGS_PROVIDER=gemini  # gemini | openrouter
 
 # --- Demo DB (default) ---
 DATABASE_URL=postgresql+psycopg2://user:pass@host:5432/postgres?sslmode=require
